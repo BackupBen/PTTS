@@ -1,13 +1,20 @@
-FROM ghcr.io/astral-sh/uv:python3.10-debian-slim
+FROM python:3.10-slim
 
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
 
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+ENV UV_SYSTEM_PYTHON=1
+ENV HF_HOME=/cache/huggingface
+ENV PORT=8000
+
 # Copy dependency files first for layer caching
 COPY pyproject.toml uv.lock README.md .python-version ./
 
-# Install all dependencies (no source yet)
+# Install dependencies
 RUN uv sync --frozen --no-install-project --extra audio
 
 # Copy source code
@@ -15,9 +22,6 @@ COPY pocket_tts/ ./pocket_tts/
 
 # Install the project
 RUN uv sync --frozen --extra audio
-
-ENV HF_HOME=/cache/huggingface
-ENV PORT=8000
 
 EXPOSE 8000
 

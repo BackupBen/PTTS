@@ -191,6 +191,8 @@ def text_to_speech(
 
         try:
             model_state = model.get_state_for_audio_prompt(Path(temp_file_path), truncate=True)
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
         finally:
             os.unlink(temp_file_path)
     else:

@@ -39,8 +39,34 @@ cli_app = typer.Typer(
 # The pocket-tts server implementation
 # ------------------------------------------------------
 
-# Global model instance
-tts_model: TTSModel | None = None
+# Global model cache — loaded lazily per language
+tts_models: dict[str, TTSModel] = {}
+tts_models_lock = threading.Lock()
+_quantize: bool = False
+
+AVAILABLE_LANGUAGES = [
+    "english",
+    "english_2026-01",
+    "english_2026-04",
+    "french_24l",
+    "german_24l",
+    "german",
+    "portuguese",
+    "portuguese_24l",
+    "italian",
+    "italian_24l",
+    "spanish",
+    "spanish_24l",
+]
+
+
+def get_model(language: str) -> TTSModel:
+    if language not in tts_models:
+        with tts_models_lock:
+            if language not in tts_models:
+                logger.info("Loading model for language: %s", language)
+                tts_models[language] = TTSModel.load_model(language=language, quantize=_quantize)
+    return tts_models[language]
 
 web_app = FastAPI(
     title="Kyutai Pocket TTS API", description="Text-to-Speech generation API", version="1.0.0"
@@ -72,7 +98,12 @@ async def health():
     return {"status": "healthy"}
 
 
-def write_to_queue(queue, text_to_generate, model_state):
+@web_app.get("/languages")
+async def get_languages():
+    return {"languages": AVAILABLE_LANGUAGES}
+
+
+def write_to_queue(queue, text_to_generate, model_state, model: TTSModel):
     """Allows writing to the StreamingResponse as if it were a file."""
 
     class FileLikeToQueue(io.IOBase):
@@ -88,17 +119,17 @@ def write_to_queue(queue, text_to_generate, model_state):
         def close(self):
             self.queue.put(None)
 
-    audio_chunks = tts_model.generate_audio_stream(
+    audio_chunks = model.generate_audio_stream(
         model_state=model_state, text_to_generate=text_to_generate
     )
-    stream_audio_chunks(FileLikeToQueue(queue), audio_chunks, tts_model.config.mimi.sample_rate)
+    stream_audio_chunks(FileLikeToQueue(queue), audio_chunks, model.config.mimi.sample_rate)
 
 
-def generate_data_with_state(text_to_generate: str, model_state: dict):
+def generate_data_with_state(text_to_generate: str, model_state: dict, model: TTSModel):
     queue = Queue()
 
     # Run your function in a thread
-    thread = threading.Thread(target=write_to_queue, args=(queue, text_to_generate, model_state))
+    thread = threading.Thread(target=write_to_queue, args=(queue, text_to_generate, model_state, model))
     thread.start()
 
     # Yield data as it becomes available
@@ -118,15 +149,17 @@ def text_to_speech(
     text: str = Form(...),
     voice_url: str | None = Form(None),
     voice_wav: UploadFile | None = File(None),
+    language: str = Form("english"),
+    temperature: float = Form(DEFAULT_TEMPERATURE),
+    eos_threshold: float = Form(DEFAULT_EOS_THRESHOLD),
 ):
-    """
-    Generate speech from text using the pre-loaded voice prompt or a custom voice.
+    if language not in AVAILABLE_LANGUAGES:
+        raise HTTPException(status_code=400, detail=f"Unknown language: {language}")
 
-    Args:
-        text: Text to convert to speech
-        voice_url: Optional built-in voice name (e.g., "alba"), or voice URL (http://, https://, or hf://)
-        voice_wav: Optional uploaded voice file (mutually exclusive with voice_url)
-    """
+    model = get_model(language)
+    model.temp = temperature
+    model.eos_threshold = eos_threshold
+
     if not text.strip():
         raise HTTPException(status_code=400, detail="Text cannot be empty")
 
@@ -136,7 +169,6 @@ def text_to_speech(
     if voice_url is not None and voice_wav is not None:
         raise HTTPException(status_code=400, detail="Cannot provide both voice_url and voice_wav")
 
-    # Use the appropriate model state
     if voice_url is not None:
         if not (
             voice_url.startswith("http://")
@@ -147,10 +179,9 @@ def text_to_speech(
             raise HTTPException(
                 status_code=400, detail="voice_url must start with http://, https://, or hf://"
             )
-        model_state = tts_model._cached_get_state_for_audio_prompt(voice_url)
+        model_state = model._cached_get_state_for_audio_prompt(voice_url)
         logging.warning("Using voice from URL: %s", voice_url)
     elif voice_wav is not None:
-        # Use uploaded voice file - preserve extension for format detection
         suffix = Path(voice_wav.filename).suffix if voice_wav.filename else ".wav"
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
             content = voice_wav.file.read()
@@ -158,16 +189,15 @@ def text_to_speech(
             temp_file.flush()
             temp_file_path = temp_file.name
 
-        # Close the file before reading it back (required on Windows)
         try:
-            model_state = tts_model.get_state_for_audio_prompt(Path(temp_file_path), truncate=True)
+            model_state = model.get_state_for_audio_prompt(Path(temp_file_path), truncate=True)
         finally:
             os.unlink(temp_file_path)
     else:
         raise HTTPException(status_code=500, detail="This should never happen.")
 
     return StreamingResponse(
-        generate_data_with_state(text, model_state),
+        generate_data_with_state(text, model_state, model),
         media_type="audio/wav",
         headers={
             "Content-Disposition": "attachment; filename=generated_speech.wav",
@@ -203,8 +233,12 @@ def serve(
 ):
     """Start the FastAPI server."""
 
-    global tts_model
-    tts_model = TTSModel.load_model(language=language, config=config, quantize=quantize)
+    global _quantize
+    _quantize = quantize
+
+    # Preload the default language model at startup
+    default_language = language or "english"
+    get_model(default_language)
 
     uvicorn.run("pocket_tts.main:web_app", host=host, port=port, reload=reload)
 

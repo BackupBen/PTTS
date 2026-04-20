@@ -83,7 +83,43 @@
             </p>
         </div>
 
-        
+        <div class="bg-white p-4 rounded-lg shadow space-y-4">
+            <div>
+                <label for="language-select" class="block text-sm font-medium text-gray-700 mb-2">Language:</label>
+                <select id="language-select" class="w-full border rounded p-2 bg-white">
+                    <option value="english">English (default)</option>
+                    <option value="english_2026-04">English 2026-04</option>
+                    <option value="english_2026-01">English 2026-01</option>
+                    <option value="german_24l">German (24L)</option>
+                    <option value="german">German</option>
+                    <option value="french_24l">French (24L)</option>
+                    <option value="spanish_24l">Spanish (24L)</option>
+                    <option value="spanish">Spanish</option>
+                    <option value="italian_24l">Italian (24L)</option>
+                    <option value="italian">Italian</option>
+                    <option value="portuguese_24l">Portuguese (24L)</option>
+                    <option value="portuguese">Portuguese</option>
+                </select>
+                <p class="text-xs text-gray-500 mt-1">First use of a new language takes extra time to download the model (~few minutes).</p>
+            </div>
+
+            <div>
+                <label for="temperature-input" class="block text-sm font-medium text-gray-700 mb-1">
+                    Temperature: <span id="temperature-value">0.7</span>
+                </label>
+                <input type="range" id="temperature-input" min="0.1" max="1.5" step="0.05" value="0.7" class="w-full" />
+                <p class="text-xs text-gray-500">Higher = more expressive/varied, lower = more stable/flat.</p>
+            </div>
+
+            <div>
+                <label for="eos-input" class="block text-sm font-medium text-gray-700 mb-1">
+                    EOS Threshold: <span id="eos-value">-4.0</span>
+                </label>
+                <input type="range" id="eos-input" min="-10" max="-1" step="0.5" value="-4.0" class="w-full" />
+                <p class="text-xs text-gray-500">Controls when speech stops. Lower = waits longer before ending.</p>
+            </div>
+        </div>
+
         <button
             id="generate-btn"
             class="w-full px-4 py-2 rounded text-white bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
@@ -240,6 +276,15 @@
         let streamingPlayer = null;
         let currentAudioBlob = null;
 
+        // Slider display updates
+        const tempInput = document.getElementById('temperature-input');
+        const tempValue = document.getElementById('temperature-value');
+        tempInput.addEventListener('input', () => tempValue.textContent = parseFloat(tempInput.value).toFixed(2));
+
+        const eosInput = document.getElementById('eos-input');
+        const eosValue = document.getElementById('eos-value');
+        eosInput.addEventListener('input', () => eosValue.textContent = parseFloat(eosInput.value).toFixed(1));
+
         // DOM elements
         const textInput = document.getElementById('text-input');
         const generateBtn = document.getElementById('generate-btn');
@@ -301,8 +346,10 @@
             try {
                 const formData = new FormData();
                 formData.append('text', text);
+                formData.append('language', document.getElementById('language-select').value);
+                formData.append('temperature', document.getElementById('temperature-input').value);
+                formData.append('eos_threshold', document.getElementById('eos-input').value);
 
-                // Add voice URL if provided (only if no WAV file is uploaded)
                 const voiceUrl = document.getElementById('voice-url-input').value.trim();
                 const voiceWavFile = document.getElementById('voice-wav-input').files[0];
 
